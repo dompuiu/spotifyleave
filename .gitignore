@@ -1,0 +1,11 @@
+node_modules
+dist
+
+# Runtime data and local auth tokens
+data/
+.env
+
+# Python cache files
+__pycache__/
+*.pyc
+.vite/

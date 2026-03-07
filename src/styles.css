@@ -506,6 +506,12 @@ textarea {
   padding: 2px 8px;
 }
 
+.song-tag.archived {
+  border-color: #9ab4d4;
+  background: #daeaf7;
+  color: #1a3d5f;
+}
+
 .song-tag.diff-gap {
   border-color: #de9a87;
   background: #fde7de;

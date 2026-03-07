@@ -339,7 +339,7 @@ function loadSelectedPlaylistIdsFromLocalStorage() {
       spotifyPlaylistId: typeof parsed.spotifyPlaylistId === 'string' ? parsed.spotifyPlaylistId : '',
       youtubePlaylistId: typeof parsed.youtubePlaylistId === 'string' ? parsed.youtubePlaylistId : '',
       isDiffEnabled: Boolean(parsed.isDiffEnabled),
-      collapseMigratedSongs: Boolean(parsed.collapseMigratedSongs)
+      collapseArchivedSongs: Boolean(parsed.collapseArchivedSongs ?? parsed.collapseMigratedSongs)
     };
   } catch {
     return null;
@@ -359,10 +359,10 @@ function saveSelectedPlaylistIdsToLocalStorage(state) {
  *
  * Row kinds:
  *  { kind: 'position', sourceIndex, songKey, song, detail, diffStatus, isMigrated, isArchived, ytSong, ytDetail }
- *  { kind: 'collapsed-run', startIndex, endIndex, count, songKeys }
+ *  { kind: 'archived-run-toggle', startIndex, endIndex, count, songKeys, isExpanded }
  *  { kind: 'youtube-extra', ytIndex, ytSong, ytDetail }
  *
- * When collapseMigratedSongs is false (or archivedSongKeys is empty) the model degenerates to all 'position' rows
+ * When collapseArchivedSongs is false (or archivedSongKeys is empty) the model degenerates to all 'position' rows
  * (preserving existing behaviour exactly).
  */
 function buildDisplayRows({
@@ -373,7 +373,7 @@ function buildDisplayRows({
   diffByIndex,
   targetSongs,
   targetDetails,
-  collapseMigratedSongs,
+  collapseArchivedSongs,
   expandedRunStartIndexes
 }) {
   const migratedSet = new Set(migratedSongKeys);
@@ -389,7 +389,7 @@ function buildDisplayRows({
     const isMigrated = migratedSet.has(songKey);
     const isArchived = archivedSet.has(songKey);
 
-    if (collapseMigratedSongs && isArchived) {
+    if (collapseArchivedSongs && isArchived) {
       // Collect contiguous archived songs
       const runStart = i;
       const runSongKeys = [];
@@ -403,7 +403,18 @@ function buildDisplayRows({
       }
       const runEnd = i - 1;
 
-      if (expandedSet.has(runStart)) {
+      const isExpanded = expandedSet.has(runStart);
+
+      rows.push({
+        kind: 'archived-run-toggle',
+        startIndex: runStart,
+        endIndex: runEnd,
+        count: runSongKeys.length,
+        songKeys: runSongKeys,
+        isExpanded
+      });
+
+      if (isExpanded) {
         // Render each song in the run individually (expanded)
         for (let j = runStart; j <= runEnd; j++) {
           const rs = spotifySongs[j];
@@ -422,14 +433,6 @@ function buildDisplayRows({
             ytDetail: targetDetails[j] ?? null
           });
         }
-      } else {
-        rows.push({
-          kind: 'collapsed-run',
-          startIndex: runStart,
-          endIndex: runEnd,
-          count: runSongKeys.length,
-          songKeys: runSongKeys
-        });
       }
     } else {
       rows.push({
@@ -482,6 +485,7 @@ function SongList({
   selectable = false,
   selectedSongKeys = [],
   migratedSongKeys = [],
+  archivedSongKeys = [],
   onToggleSong,
   onToggleAll,
   selectOptions = null,
@@ -492,12 +496,13 @@ function SongList({
   diffByIndex = [],
   inlineAfterSongIndex = -1,
   inlineAfterSongContent = null,
-  // Row-model props (used when collapseMigratedSongs is on)
+  // Row-model props (used when collapseArchivedSongs is on)
   rows = null,
   onToggleRunExpanded = null
 }) {
   const selectedSet = new Set(selectedSongKeys);
   const migratedSet = new Set(migratedSongKeys);
+  const archivedSet = new Set(archivedSongKeys);
 
   // When rows are provided we derive selectable keys only from visible 'position' rows
   const allSongKeys = rows
@@ -555,17 +560,17 @@ function SongList({
         // --- Row-model rendering ---
         <ul className="song-list" ref={listRef}>
           {rows.map((row) => {
-            if (row.kind === 'collapsed-run') {
+            if (row.kind === 'archived-run-toggle') {
               return (
-                <li key={`collapsed-run-${row.startIndex}`} className="song-collapsed-run">
+                <li key={`archived-run-${row.startIndex}`} className="song-collapsed-run">
                   <button
                     type="button"
                     className="collapsed-run-btn"
                     onClick={() => onToggleRunExpanded?.(row.startIndex)}
-                    aria-expanded="false"
+                    aria-expanded={row.isExpanded}
                   >
                     <span className="collapsed-run-label">
-                      #{row.startIndex + 1}–#{row.endIndex + 1} — {row.count} migrated song{row.count === 1 ? '' : 's'}
+                      #{row.startIndex + 1}–#{row.endIndex + 1} — {row.count} archived song{row.count === 1 ? '' : 's'}
                     </span>
                     <span className="collapsed-run-chevron">▶</span>
                   </button>
@@ -574,7 +579,7 @@ function SongList({
             }
 
             if (row.kind === 'position') {
-              const { sourceIndex, songKey, song, detail, diffStatus, isMigrated } = row;
+              const { sourceIndex, songKey, song, detail, diffStatus, isMigrated, isArchived } = row;
               const isSelected = selectedSet.has(songKey);
               const shouldRenderInlineContent =
                 Boolean(inlineAfterSongContent) && sourceIndex === inlineAfterSongIndex;
@@ -602,6 +607,7 @@ function SongList({
                       <span>{detail?.title || song}</span>
                       <span className="song-tag-slot">
                         {isMigrated ? <span className="song-tag">Migrated</span> : null}
+                        {isArchived ? <span className="song-tag archived">Archived</span> : null}
                         {diffStatus?.type === 'missing-at-position' ? (
                           <span className="song-tag diff-gap">Gap at #{sourceIndex + 1}</span>
                         ) : null}
@@ -633,6 +639,7 @@ function SongList({
             const songKey = buildSongKey(songDetails[index], song, index);
             const isSelected = selectedSet.has(songKey);
             const isMigrated = migratedSet.has(songKey);
+            const isArchived = archivedSet.has(songKey);
             const diffStatus = diffByIndex[index] || null;
             const shouldRenderInlineContent = Boolean(inlineAfterSongContent) && index === inlineAfterSongIndex;
 
@@ -659,6 +666,7 @@ function SongList({
                       <span>{songDetails[index]?.title || song}</span>
                       <span className="song-tag-slot">
                         {isMigrated ? <span className="song-tag">Migrated</span> : null}
+                        {isArchived ? <span className="song-tag archived">Archived</span> : null}
                         {diffStatus?.type === 'missing-at-position' ? (
                           <span className="song-tag diff-gap">Gap at #{index + 1}</span>
                         ) : null}
@@ -687,8 +695,9 @@ function SongList({
 
 /**
  * YouTube-side aligned list rendered from the shared display row model.
- * Position rows show the YouTube song at that index (or a gap placeholder).
- * Collapsed-run rows show a matching alignment placeholder.
+ * Position rows show the YouTube song at that index when one exists.
+ * Archived-run rows mirror the Spotify grouping state.
+ * Only Spotify makes them interactive.
  * YouTube-extra rows show songs that exist only in YouTube beyond the Spotify length.
  */
 function YouTubeAlignedList({
@@ -704,8 +713,12 @@ function YouTubeAlignedList({
   inlineAfterSongContent = null
 }) {
   const selectedSet = new Set(selectedSongKeys);
+  const visibleRows = rows.filter((row) => {
+    if (row.kind === 'position') return row.ytSong != null;
+    return true;
+  });
 
-  const allSelectableKeys = rows.flatMap((row) => {
+  const allSelectableKeys = visibleRows.flatMap((row) => {
     if (row.kind === 'position' && row.ytSong != null) {
       return [buildSongKey(row.ytDetail, row.ytSong, row.sourceIndex)];
     }
@@ -716,7 +729,7 @@ function YouTubeAlignedList({
   });
   const isAllSelected = allSelectableKeys.length > 0 && allSelectableKeys.every((k) => selectedSet.has(k));
 
-  const isEmpty = rows.length === 0;
+  const isEmpty = visibleRows.length === 0;
 
   return (
     <div className="block">
@@ -738,12 +751,13 @@ function YouTubeAlignedList({
         <p className="muted">{emptyText}</p>
       ) : (
         <ul className="song-list" ref={listRef}>
-          {rows.map((row) => {
-            if (row.kind === 'collapsed-run') {
+          {visibleRows.map((row) => {
+            if (row.kind === 'archived-run-toggle') {
               return (
-                <li key={`yt-collapsed-run-${row.startIndex}`} className="song-collapsed-run yt-alignment-run">
-                  <span className="collapsed-run-label yt-alignment-label">
-                    #{row.startIndex + 1}–#{row.endIndex + 1} — aligned with Spotify migrated songs
+                <li key={`yt-archived-run-${row.startIndex}`} className="yt-alignment-run">
+                  <span className="yt-alignment-label">
+                    #{row.startIndex + 1}–#{row.endIndex + 1} — {row.count} archived song{row.count === 1 ? '' : 's'}
+                    {row.isExpanded ? ' expanded in Spotify' : ' collapsed in Spotify'}
                   </span>
                 </li>
               );
@@ -752,18 +766,7 @@ function YouTubeAlignedList({
             if (row.kind === 'position') {
               const { sourceIndex, ytSong, ytDetail } = row;
               if (ytSong == null) {
-                // YouTube has no song at this position
-                return (
-                  <li key={`yt-gap-${sourceIndex}`} className="yt-position-gap" data-song-index={sourceIndex}>
-                    <span className="song-row-control" aria-hidden="true" />
-                    <span className="track-number">{sourceIndex + 1}.</span>
-                    <span className="song-text">
-                      <span className="song-title-row">
-                        <span className="yt-gap-label">—</span>
-                      </span>
-                    </span>
-                  </li>
-                );
+                return null;
               }
 
               const songKey = buildSongKey(ytDetail, ytSong, sourceIndex);
@@ -901,7 +904,7 @@ export default function App() {
   const [youtubeMovePositionsInput, setYoutubeMovePositionsInput] = useState('1');
   const [isDeletingYoutubePlaylist, setIsDeletingYoutubePlaylist] = useState(false);
   const [isDiffEnabled, setIsDiffEnabled] = useState(false);
-  const [collapseMigratedSongs, setCollapseMigratedSongs] = useState(false);
+  const [collapseArchivedSongs, setCollapseArchivedSongs] = useState(false);
   const [expandedRunStartIndexes, setExpandedRunStartIndexes] = useState([]);
   const [insertVideoModalOpen, setInsertVideoModalOpen] = useState(false);
   const [insertVideoIdInput, setInsertVideoIdInput] = useState('');
@@ -932,7 +935,7 @@ export default function App() {
         youtubePlaylistId: localState.youtubePlaylistId
       };
       setIsDiffEnabled(localState.isDiffEnabled);
-      setCollapseMigratedSongs(Boolean(localState.collapseMigratedSongs));
+      setCollapseArchivedSongs(Boolean(localState.collapseArchivedSongs));
     }
 
     hasHydratedLocalState.current = true;
@@ -1105,9 +1108,9 @@ export default function App() {
       spotifyPlaylistId,
       youtubePlaylistId,
       isDiffEnabled,
-      collapseMigratedSongs
+      collapseArchivedSongs
     });
-  }, [spotifyPlaylistId, youtubePlaylistId, isDiffEnabled, collapseMigratedSongs]);
+  }, [spotifyPlaylistId, youtubePlaylistId, isDiffEnabled, collapseArchivedSongs]);
 
   useEffect(() => {
     if (!spotifyPlaylists.some((playlist) => playlist.id === spotifyPlaylistId)) {
@@ -1301,7 +1304,7 @@ export default function App() {
         diffByIndex: visibleDiffByIndex,
         targetSongs,
         targetDetails: youtubePlaylist?.songDetails ?? [],
-        collapseMigratedSongs,
+        collapseArchivedSongs,
         expandedRunStartIndexes
       }),
     [
@@ -1312,7 +1315,7 @@ export default function App() {
       visibleDiffByIndex,
       targetSongs,
       youtubePlaylist?.songDetails,
-      collapseMigratedSongs,
+      collapseArchivedSongs,
       expandedRunStartIndexes
     ]
   );
@@ -1499,10 +1502,10 @@ export default function App() {
       .map((song, index) => buildSongKey(spotifyPlaylist.songDetails?.[index], song, index));
 
     if (value === 'all') {
-      // When collapse is on, only select visible (non-migrated) songs
-      const migratedSet = new Set(migratedSpotifySongKeys);
-      const keysToSelect = collapseMigratedSongs
-        ? allSongKeys.filter((key) => !migratedSet.has(key))
+      // When collapse is on, only select visible (non-archived) songs
+      const archivedSet = new Set(archivedSpotifySongKeys);
+      const keysToSelect = collapseArchivedSongs
+        ? allSongKeys.filter((key) => !archivedSet.has(key))
         : allSongKeys;
       setSelectedSpotifySongKeys(keysToSelect);
       if (keysToSelect.length > 0) {
@@ -1524,9 +1527,9 @@ export default function App() {
       return;
     }
 
-    const migratedSet = new Set(migratedSpotifySongKeys);
-    const nonMigratedSongKeys = allSongKeys.filter((songKey) => !migratedSet.has(songKey));
-    const nextSelectedSongKeys = nonMigratedSongKeys.slice(0, batchSize);
+    const archivedSet = new Set(archivedSpotifySongKeys);
+    const visibleSongKeys = allSongKeys.filter((songKey) => !archivedSet.has(songKey));
+    const nextSelectedSongKeys = visibleSongKeys.slice(0, batchSize);
     setSelectedSpotifySongKeys(nextSelectedSongKeys);
 
     const firstSelectedIndex = nextSelectedSongKeys
@@ -2064,10 +2067,10 @@ export default function App() {
             <label className="list-checkbox-toggle">
               <input
                 type="checkbox"
-                checked={collapseMigratedSongs}
-                onChange={(event) => setCollapseMigratedSongs(event.target.checked)}
+                checked={collapseArchivedSongs}
+                onChange={(event) => setCollapseArchivedSongs(event.target.checked)}
               />
-              Collapse migrated songs
+              Collapse archived songs
             </label>
           </div>
 
@@ -2078,6 +2081,7 @@ export default function App() {
             selectable
             selectedSongKeys={selectedSpotifySongKeys}
             migratedSongKeys={migratedSpotifySongKeys}
+            archivedSongKeys={archivedSpotifySongKeys}
             onToggleSong={handleToggleSpotifySong}
             onToggleAll={handleToggleAllSpotifySongs}
             selectOptions={spotifySelectOptions}
@@ -2087,7 +2091,7 @@ export default function App() {
             listRef={spotifySongListRef}
             diffByIndex={visibleDiffByIndex}
             inlineAfterSongIndex={showInlineSpotifyActions ? firstSelectedSpotifySongIndex : -1}
-            rows={collapseMigratedSongs ? displayRows.filter((r) => r.kind !== 'youtube-extra') : null}
+            rows={collapseArchivedSongs ? displayRows.filter((r) => r.kind !== 'youtube-extra') : null}
             onToggleRunExpanded={handleToggleRunExpanded}
             inlineAfterSongContent={
               showInlineSpotifyActions ? (
@@ -2320,7 +2324,7 @@ export default function App() {
                 </div>
               ) : null}
 
-              {collapseMigratedSongs && youtubePlaylist ? (
+              {collapseArchivedSongs && youtubePlaylist ? (
                 <YouTubeAlignedList
                   title="Songs in YouTube Playlist"
                   rows={displayRows}

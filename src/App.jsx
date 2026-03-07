@@ -302,6 +302,9 @@ function normalizeSpotifyPlaylist(playlist) {
     migratedSongKeys: Array.isArray(playlist?.migratedSongKeys)
       ? playlist.migratedSongKeys.filter((key) => typeof key === 'string')
       : [],
+    archivedSongKeys: Array.isArray(playlist?.archivedSongKeys)
+      ? playlist.archivedSongKeys.filter((key) => typeof key === 'string')
+      : [],
     diffResolvedSongKeys: Array.isArray(playlist?.diffResolvedSongKeys)
       ? playlist.diffResolvedSongKeys.filter((key) => typeof key === 'string')
       : []
@@ -335,7 +338,8 @@ function loadSelectedPlaylistIdsFromLocalStorage() {
     return {
       spotifyPlaylistId: typeof parsed.spotifyPlaylistId === 'string' ? parsed.spotifyPlaylistId : '',
       youtubePlaylistId: typeof parsed.youtubePlaylistId === 'string' ? parsed.youtubePlaylistId : '',
-      isDiffEnabled: Boolean(parsed.isDiffEnabled)
+      isDiffEnabled: Boolean(parsed.isDiffEnabled),
+      collapseMigratedSongs: Boolean(parsed.collapseMigratedSongs)
     };
   } catch {
     return null;
@@ -348,6 +352,113 @@ function saveSelectedPlaylistIdsToLocalStorage(state) {
   } catch {
     // Ignore quota/storage errors and keep app functional.
   }
+}
+
+/**
+ * Builds a shared display row model for the Spotify+YouTube aligned view.
+ *
+ * Row kinds:
+ *  { kind: 'position', sourceIndex, songKey, song, detail, diffStatus, isMigrated, isArchived, ytSong, ytDetail }
+ *  { kind: 'collapsed-run', startIndex, endIndex, count, songKeys }
+ *  { kind: 'youtube-extra', ytIndex, ytSong, ytDetail }
+ *
+ * When collapseMigratedSongs is false (or archivedSongKeys is empty) the model degenerates to all 'position' rows
+ * (preserving existing behaviour exactly).
+ */
+function buildDisplayRows({
+  spotifySongs,
+  spotifyDetails,
+  migratedSongKeys,
+  archivedSongKeys,
+  diffByIndex,
+  targetSongs,
+  targetDetails,
+  collapseMigratedSongs,
+  expandedRunStartIndexes
+}) {
+  const migratedSet = new Set(migratedSongKeys);
+  const archivedSet = new Set(archivedSongKeys);
+  const expandedSet = new Set(expandedRunStartIndexes);
+  const rows = [];
+  let i = 0;
+
+  while (i < spotifySongs.length) {
+    const song = spotifySongs[i];
+    const detail = spotifyDetails[i];
+    const songKey = buildSongKey(detail, song, i);
+    const isMigrated = migratedSet.has(songKey);
+    const isArchived = archivedSet.has(songKey);
+
+    if (collapseMigratedSongs && isArchived) {
+      // Collect contiguous archived songs
+      const runStart = i;
+      const runSongKeys = [];
+      while (i < spotifySongs.length) {
+        const s = spotifySongs[i];
+        const d = spotifyDetails[i];
+        const k = buildSongKey(d, s, i);
+        if (!archivedSet.has(k)) break;
+        runSongKeys.push(k);
+        i++;
+      }
+      const runEnd = i - 1;
+
+      if (expandedSet.has(runStart)) {
+        // Render each song in the run individually (expanded)
+        for (let j = runStart; j <= runEnd; j++) {
+          const rs = spotifySongs[j];
+          const rd = spotifyDetails[j];
+          const rk = buildSongKey(rd, rs, j);
+          rows.push({
+            kind: 'position',
+            sourceIndex: j,
+            songKey: rk,
+            song: rs,
+            detail: rd,
+            diffStatus: diffByIndex[j] || null,
+            isMigrated: migratedSet.has(rk),
+            isArchived: true,
+            ytSong: targetSongs[j] ?? null,
+            ytDetail: targetDetails[j] ?? null
+          });
+        }
+      } else {
+        rows.push({
+          kind: 'collapsed-run',
+          startIndex: runStart,
+          endIndex: runEnd,
+          count: runSongKeys.length,
+          songKeys: runSongKeys
+        });
+      }
+    } else {
+      rows.push({
+        kind: 'position',
+        sourceIndex: i,
+        songKey,
+        song,
+        detail,
+        diffStatus: diffByIndex[i] || null,
+        isMigrated,
+        isArchived,
+        ytSong: targetSongs[i] ?? null,
+        ytDetail: targetDetails[i] ?? null
+      });
+      i++;
+    }
+  }
+
+  // YouTube extras (songs beyond Spotify length)
+  for (let j = spotifySongs.length; j < targetSongs.length; j++) {
+    rows.push({
+      kind: 'youtube-extra',
+      ytIndex: j,
+      ytSong: targetSongs[j],
+      ytDetail: targetDetails[j] ?? null
+    });
+  }
+
+  return rows;
 }
 
 function PanelHeader({ title, connected, onConnect, buttonLabel, disableConnect }) {
@@ -380,12 +491,22 @@ function SongList({
   listRef = null,
   diffByIndex = [],
   inlineAfterSongIndex = -1,
-  inlineAfterSongContent = null
+  inlineAfterSongContent = null,
+  // Row-model props (used when collapseMigratedSongs is on)
+  rows = null,
+  onToggleRunExpanded = null
 }) {
   const selectedSet = new Set(selectedSongKeys);
   const migratedSet = new Set(migratedSongKeys);
-  const allSongKeys = songs.map((song, index) => buildSongKey(songDetails[index], song, index));
+
+  // When rows are provided we derive selectable keys only from visible 'position' rows
+  const allSongKeys = rows
+    ? rows.flatMap((row) => (row.kind === 'position' ? [row.songKey] : []))
+    : songs.map((song, index) => buildSongKey(songDetails[index], song, index));
+
   const isAllSongsSelected = allSongKeys.length > 0 && allSongKeys.every((songKey) => selectedSet.has(songKey));
+
+  const isEmpty = rows ? rows.length === 0 : songs.length === 0;
 
   return (
     <div className="block">
@@ -428,9 +549,85 @@ function SongList({
           )
         ) : null}
       </div>
-      {songs.length === 0 ? (
+      {isEmpty ? (
         <p className="muted">{emptyText}</p>
+      ) : rows ? (
+        // --- Row-model rendering ---
+        <ul className="song-list" ref={listRef}>
+          {rows.map((row) => {
+            if (row.kind === 'collapsed-run') {
+              return (
+                <li key={`collapsed-run-${row.startIndex}`} className="song-collapsed-run">
+                  <button
+                    type="button"
+                    className="collapsed-run-btn"
+                    onClick={() => onToggleRunExpanded?.(row.startIndex)}
+                    aria-expanded="false"
+                  >
+                    <span className="collapsed-run-label">
+                      #{row.startIndex + 1}–#{row.endIndex + 1} — {row.count} migrated song{row.count === 1 ? '' : 's'}
+                    </span>
+                    <span className="collapsed-run-chevron">▶</span>
+                  </button>
+                </li>
+              );
+            }
+
+            if (row.kind === 'position') {
+              const { sourceIndex, songKey, song, detail, diffStatus, isMigrated } = row;
+              const isSelected = selectedSet.has(songKey);
+              const shouldRenderInlineContent =
+                Boolean(inlineAfterSongContent) && sourceIndex === inlineAfterSongIndex;
+
+              return (
+                <li
+                  key={`pos-${sourceIndex}`}
+                  className={`${isMigrated ? 'song-migrated' : ''}${shouldRenderInlineContent ? ' song-with-floating-actions' : ''}`}
+                  data-song-index={sourceIndex}
+                >
+                  <span className="song-row-control" aria-hidden={!selectable}>
+                    {selectable ? (
+                      <input
+                        type="checkbox"
+                        className="song-checkbox"
+                        checked={isSelected}
+                        onChange={() => onToggleSong?.(songKey)}
+                        aria-label={`Select ${detail?.title || song}`}
+                      />
+                    ) : null}
+                  </span>
+                  <span className="track-number">{sourceIndex + 1}.</span>
+                  <span className="song-text">
+                    <span className="song-title-row">
+                      <span>{detail?.title || song}</span>
+                      <span className="song-tag-slot">
+                        {isMigrated ? <span className="song-tag">Migrated</span> : null}
+                        {diffStatus?.type === 'missing-at-position' ? (
+                          <span className="song-tag diff-gap">Gap at #{sourceIndex + 1}</span>
+                        ) : null}
+                        {diffStatus?.type === 'present-wrong-position' ? (
+                          <span className="song-tag diff-shifted">Found at #{diffStatus.actualIndex + 1}</span>
+                        ) : null}
+                      </span>
+                    </span>
+                    {detail?.artist || detail?.album ? (
+                      <span className="song-meta">
+                        {[detail.artist, detail.album ? `Album: ${detail.album}` : ''].filter(Boolean).join(' | ')}
+                      </span>
+                    ) : null}
+                  </span>
+                  {shouldRenderInlineContent ? (
+                    <span className="song-floating-actions">{inlineAfterSongContent}</span>
+                  ) : null}
+                </li>
+              );
+            }
+
+            return null;
+          })}
+        </ul>
       ) : (
+        // --- Legacy flat rendering (YouTube panel, or when collapse is off) ---
         <ul className="song-list" ref={listRef}>
           {songs.map((song, index) => {
             const songKey = buildSongKey(songDetails[index], song, index);
@@ -488,6 +685,180 @@ function SongList({
   );
 }
 
+/**
+ * YouTube-side aligned list rendered from the shared display row model.
+ * Position rows show the YouTube song at that index (or a gap placeholder).
+ * Collapsed-run rows show a matching alignment placeholder.
+ * YouTube-extra rows show songs that exist only in YouTube beyond the Spotify length.
+ */
+function YouTubeAlignedList({
+  title,
+  rows,
+  emptyText,
+  selectable = false,
+  selectedSongKeys = [],
+  onToggleSong,
+  onToggleAll,
+  listRef = null,
+  inlineAfterSongIndex = -1,
+  inlineAfterSongContent = null
+}) {
+  const selectedSet = new Set(selectedSongKeys);
+
+  const allSelectableKeys = rows.flatMap((row) => {
+    if (row.kind === 'position' && row.ytSong != null) {
+      return [buildSongKey(row.ytDetail, row.ytSong, row.sourceIndex)];
+    }
+    if (row.kind === 'youtube-extra') {
+      return [buildSongKey(row.ytDetail, row.ytSong, row.ytIndex)];
+    }
+    return [];
+  });
+  const isAllSelected = allSelectableKeys.length > 0 && allSelectableKeys.every((k) => selectedSet.has(k));
+
+  const isEmpty = rows.length === 0;
+
+  return (
+    <div className="block">
+      <div className="song-list-header">
+        <h3>{title}</h3>
+        {selectable ? (
+          <label className="list-checkbox-toggle">
+            <input
+              type="checkbox"
+              checked={isAllSelected}
+              onChange={(event) => onToggleAll?.(event.target.checked)}
+              disabled={allSelectableKeys.length === 0}
+            />
+            Select all
+          </label>
+        ) : null}
+      </div>
+      {isEmpty ? (
+        <p className="muted">{emptyText}</p>
+      ) : (
+        <ul className="song-list" ref={listRef}>
+          {rows.map((row) => {
+            if (row.kind === 'collapsed-run') {
+              return (
+                <li key={`yt-collapsed-run-${row.startIndex}`} className="song-collapsed-run yt-alignment-run">
+                  <span className="collapsed-run-label yt-alignment-label">
+                    #{row.startIndex + 1}–#{row.endIndex + 1} — aligned with Spotify migrated songs
+                  </span>
+                </li>
+              );
+            }
+
+            if (row.kind === 'position') {
+              const { sourceIndex, ytSong, ytDetail } = row;
+              if (ytSong == null) {
+                // YouTube has no song at this position
+                return (
+                  <li key={`yt-gap-${sourceIndex}`} className="yt-position-gap" data-song-index={sourceIndex}>
+                    <span className="song-row-control" aria-hidden="true" />
+                    <span className="track-number">{sourceIndex + 1}.</span>
+                    <span className="song-text">
+                      <span className="song-title-row">
+                        <span className="yt-gap-label">—</span>
+                      </span>
+                    </span>
+                  </li>
+                );
+              }
+
+              const songKey = buildSongKey(ytDetail, ytSong, sourceIndex);
+              const isSelected = selectedSet.has(songKey);
+              const shouldRenderInlineContent =
+                Boolean(inlineAfterSongContent) && sourceIndex === inlineAfterSongIndex;
+
+              return (
+                <li
+                  key={`yt-pos-${sourceIndex}`}
+                  className={shouldRenderInlineContent ? 'song-with-floating-actions' : ''}
+                  data-song-index={sourceIndex}
+                >
+                  <span className="song-row-control" aria-hidden={!selectable}>
+                    {selectable ? (
+                      <input
+                        type="checkbox"
+                        className="song-checkbox"
+                        checked={isSelected}
+                        onChange={() => onToggleSong?.(songKey)}
+                        aria-label={`Select ${ytDetail?.title || ytSong}`}
+                      />
+                    ) : null}
+                  </span>
+                  <span className="track-number">{sourceIndex + 1}.</span>
+                  <span className="song-text">
+                    <span className="song-title-row">
+                      <span>{ytDetail?.title || ytSong}</span>
+                    </span>
+                    {ytDetail?.artist || ytDetail?.album ? (
+                      <span className="song-meta">
+                        {[ytDetail.artist, ytDetail.album ? `Album: ${ytDetail.album}` : ''].filter(Boolean).join(' | ')}
+                      </span>
+                    ) : null}
+                  </span>
+                  {shouldRenderInlineContent ? (
+                    <span className="song-floating-actions">{inlineAfterSongContent}</span>
+                  ) : null}
+                </li>
+              );
+            }
+
+            if (row.kind === 'youtube-extra') {
+              const { ytIndex, ytSong, ytDetail } = row;
+              const songKey = buildSongKey(ytDetail, ytSong, ytIndex);
+              const isSelected = selectedSet.has(songKey);
+              const shouldRenderInlineContent =
+                Boolean(inlineAfterSongContent) && ytIndex === inlineAfterSongIndex;
+
+              return (
+                <li
+                  key={`yt-extra-${ytIndex}`}
+                  className={`yt-extra-song${shouldRenderInlineContent ? ' song-with-floating-actions' : ''}`}
+                  data-song-index={ytIndex}
+                >
+                  <span className="song-row-control" aria-hidden={!selectable}>
+                    {selectable ? (
+                      <input
+                        type="checkbox"
+                        className="song-checkbox"
+                        checked={isSelected}
+                        onChange={() => onToggleSong?.(songKey)}
+                        aria-label={`Select ${ytDetail?.title || ytSong}`}
+                      />
+                    ) : null}
+                  </span>
+                  <span className="track-number">{ytIndex + 1}.</span>
+                  <span className="song-text">
+                    <span className="song-title-row">
+                      <span>{ytDetail?.title || ytSong}</span>
+                      <span className="song-tag-slot">
+                        <span className="song-tag yt-extra-tag">YT only</span>
+                      </span>
+                    </span>
+                    {ytDetail?.artist || ytDetail?.album ? (
+                      <span className="song-meta">
+                        {[ytDetail.artist, ytDetail.album ? `Album: ${ytDetail.album}` : ''].filter(Boolean).join(' | ')}
+                      </span>
+                    ) : null}
+                  </span>
+                  {shouldRenderInlineContent ? (
+                    <span className="song-floating-actions">{inlineAfterSongContent}</span>
+                  ) : null}
+                </li>
+              );
+            }
+
+            return null;
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const spotifySelectOptions = [
     { value: 'all', label: 'all' },
@@ -530,6 +901,8 @@ export default function App() {
   const [youtubeMovePositionsInput, setYoutubeMovePositionsInput] = useState('1');
   const [isDeletingYoutubePlaylist, setIsDeletingYoutubePlaylist] = useState(false);
   const [isDiffEnabled, setIsDiffEnabled] = useState(false);
+  const [collapseMigratedSongs, setCollapseMigratedSongs] = useState(false);
+  const [expandedRunStartIndexes, setExpandedRunStartIndexes] = useState([]);
   const [insertVideoModalOpen, setInsertVideoModalOpen] = useState(false);
   const [insertVideoIdInput, setInsertVideoIdInput] = useState('');
   const [isAddingVideoAtPosition, setIsAddingVideoAtPosition] = useState(false);
@@ -559,6 +932,7 @@ export default function App() {
         youtubePlaylistId: localState.youtubePlaylistId
       };
       setIsDiffEnabled(localState.isDiffEnabled);
+      setCollapseMigratedSongs(Boolean(localState.collapseMigratedSongs));
     }
 
     hasHydratedLocalState.current = true;
@@ -730,9 +1104,10 @@ export default function App() {
     saveSelectedPlaylistIdsToLocalStorage({
       spotifyPlaylistId,
       youtubePlaylistId,
-      isDiffEnabled
+      isDiffEnabled,
+      collapseMigratedSongs
     });
-  }, [spotifyPlaylistId, youtubePlaylistId, isDiffEnabled]);
+  }, [spotifyPlaylistId, youtubePlaylistId, isDiffEnabled, collapseMigratedSongs]);
 
   useEffect(() => {
     if (!spotifyPlaylists.some((playlist) => playlist.id === spotifyPlaylistId)) {
@@ -743,6 +1118,7 @@ export default function App() {
   useEffect(() => {
     setSelectedSpotifySongKeys([]);
     setSpotifySelectValue('all');
+    setExpandedRunStartIndexes([]);
   }, [spotifyPlaylistId]);
 
   useEffect(() => {
@@ -801,6 +1177,7 @@ export default function App() {
   const spotifyPlaylist = spotifyPlaylists.find((p) => p.id === spotifyPlaylistId) || spotifyPlaylists[0];
   const spotifySongs = spotifyPlaylist?.songs ?? [];
   const migratedSpotifySongKeys = spotifyPlaylist?.migratedSongKeys ?? [];
+  const archivedSpotifySongKeys = spotifyPlaylist?.archivedSongKeys ?? [];
   const youtubePlaylist = youtubePlaylists.find((p) => p.id === youtubePlaylistId);
   const isYoutubePlaylistSongsLoaded = Boolean(youtubePlaylist?.songsLoaded);
   const isLoadingPlaylists = apiStatus === 'connecting';
@@ -903,6 +1280,49 @@ export default function App() {
     () => selectedSpotifySongKeys.filter((songKey) => resolvedDiffSongKeySet.has(songKey)),
     [selectedSpotifySongKeys, resolvedDiffSongKeySet]
   );
+  const selectedArchivableSongKeys = useMemo(() => {
+    const migratedSet = new Set(migratedSpotifySongKeys);
+    const archivedSet = new Set(archivedSpotifySongKeys);
+    return selectedSpotifySongKeys.filter((key) => migratedSet.has(key) && !archivedSet.has(key));
+  }, [selectedSpotifySongKeys, migratedSpotifySongKeys, archivedSpotifySongKeys]);
+  const selectedUnarchivableSongKeys = useMemo(() => {
+    const archivedSet = new Set(archivedSpotifySongKeys);
+    return selectedSpotifySongKeys.filter((key) => archivedSet.has(key));
+  }, [selectedSpotifySongKeys, archivedSpotifySongKeys]);
+
+  // Shared display row model — drives both the Spotify list and the YouTube aligned list
+  const displayRows = useMemo(
+    () =>
+      buildDisplayRows({
+        spotifySongs,
+        spotifyDetails: spotifyPlaylist?.songDetails ?? [],
+        migratedSongKeys: migratedSpotifySongKeys,
+        archivedSongKeys: archivedSpotifySongKeys,
+        diffByIndex: visibleDiffByIndex,
+        targetSongs,
+        targetDetails: youtubePlaylist?.songDetails ?? [],
+        collapseMigratedSongs,
+        expandedRunStartIndexes
+      }),
+    [
+      spotifySongs,
+      spotifyPlaylist?.songDetails,
+      migratedSpotifySongKeys,
+      archivedSpotifySongKeys,
+      visibleDiffByIndex,
+      targetSongs,
+      youtubePlaylist?.songDetails,
+      collapseMigratedSongs,
+      expandedRunStartIndexes
+    ]
+  );
+
+  function handleToggleRunExpanded(startIndex) {
+    setExpandedRunStartIndexes((prev) =>
+      prev.includes(startIndex) ? prev.filter((i) => i !== startIndex) : [...prev, startIndex]
+    );
+  }
+
   async function handleRefreshYoutubePlaylists() {
     if (!youtubeConnected || isRefreshingYoutubePlaylists) return;
 
@@ -1079,13 +1499,20 @@ export default function App() {
       .map((song, index) => buildSongKey(spotifyPlaylist.songDetails?.[index], song, index));
 
     if (value === 'all') {
-      setSelectedSpotifySongKeys(allSongKeys);
-      if (allSongKeys.length > 0) {
+      // When collapse is on, only select visible (non-migrated) songs
+      const migratedSet = new Set(migratedSpotifySongKeys);
+      const keysToSelect = collapseMigratedSongs
+        ? allSongKeys.filter((key) => !migratedSet.has(key))
+        : allSongKeys;
+      setSelectedSpotifySongKeys(keysToSelect);
+      if (keysToSelect.length > 0) {
+        const firstVisibleIndex = extractSongIndexFromKey(keysToSelect[0]);
         window.requestAnimationFrame(() => {
-          spotifySongListRef.current?.querySelector('[data-song-index="0"]')?.scrollIntoView({
-            behavior: 'smooth',
-            block: 'start'
-          });
+          // Scroll to the first visible data-song-index
+          const target = firstVisibleIndex >= 0
+            ? spotifySongListRef.current?.querySelector(`[data-song-index="${firstVisibleIndex}"]`)
+            : spotifySongListRef.current?.querySelector('[data-song-index="0"]');
+          target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
       }
       return;
@@ -1112,9 +1539,14 @@ export default function App() {
 
     if (firstSelectedIndex >= 0) {
       window.requestAnimationFrame(() => {
-        spotifySongListRef.current
-          ?.querySelector(`[data-song-index="${firstSelectedIndex}"]`)
-          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // When collapse is on, the exact data-song-index may not exist as a rendered row
+        // (it could be inside a collapsed run). Fall back to the closest visible row.
+        const el = spotifySongListRef.current?.querySelector(`[data-song-index="${firstSelectedIndex}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          spotifySongListRef.current?.firstElementChild?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       });
     }
   }
@@ -1173,6 +1605,34 @@ export default function App() {
       migratedSongKeys: (playlist.migratedSongKeys || []).filter((key) => !selectedSpotifySongKeys.includes(key))
     }));
     setSelectedSpotifySongKeys([]);
+  }
+
+  function handleArchiveSelectedSongs() {
+    if (!spotifyPlaylist || selectedSpotifySongKeys.length === 0) return;
+
+    // Only archive songs that are already migrated
+    const migratedSet = new Set(migratedSpotifySongKeys);
+    const keysToArchive = selectedSpotifySongKeys.filter((key) => migratedSet.has(key));
+    if (keysToArchive.length === 0) return;
+
+    updateCurrentSpotifyPlaylist((playlist) => ({
+      ...playlist,
+      archivedSongKeys: [...new Set([...(playlist.archivedSongKeys || []), ...keysToArchive])]
+    }));
+    setSelectedSpotifySongKeys((prev) => prev.filter((key) => !keysToArchive.includes(key)));
+  }
+
+  function handleUnarchiveSelectedSongs() {
+    if (!spotifyPlaylist || selectedSpotifySongKeys.length === 0) return;
+
+    const archivedSet = new Set(archivedSpotifySongKeys);
+    const keysToUnarchive = selectedSpotifySongKeys.filter((key) => archivedSet.has(key));
+    if (keysToUnarchive.length === 0) return;
+
+    updateCurrentSpotifyPlaylist((playlist) => ({
+      ...playlist,
+      archivedSongKeys: (playlist.archivedSongKeys || []).filter((key) => !keysToUnarchive.includes(key))
+    }));
   }
 
   function handleMarkSelectedDiffAsSolved() {
@@ -1592,7 +2052,7 @@ export default function App() {
             </select>
           </div>
 
-          <div className="block">
+          <div className="block spotify-toggles">
             <label className="list-checkbox-toggle">
               <input
                 type="checkbox"
@@ -1600,6 +2060,14 @@ export default function App() {
                 onChange={(event) => setIsDiffEnabled(event.target.checked)}
               />
               Show order diff (Spotify vs YouTube)
+            </label>
+            <label className="list-checkbox-toggle">
+              <input
+                type="checkbox"
+                checked={collapseMigratedSongs}
+                onChange={(event) => setCollapseMigratedSongs(event.target.checked)}
+              />
+              Collapse migrated songs
             </label>
           </div>
 
@@ -1619,6 +2087,8 @@ export default function App() {
             listRef={spotifySongListRef}
             diffByIndex={visibleDiffByIndex}
             inlineAfterSongIndex={showInlineSpotifyActions ? firstSelectedSpotifySongIndex : -1}
+            rows={collapseMigratedSongs ? displayRows.filter((r) => r.kind !== 'youtube-extra') : null}
+            onToggleRunExpanded={handleToggleRunExpanded}
             inlineAfterSongContent={
               showInlineSpotifyActions ? (
                 <div className="batch-actions inline-batch-actions">
@@ -1660,6 +2130,20 @@ export default function App() {
                       disabled={selectedSpotifySongKeys.length === 0 || isMigratingSongs}
                     >
                       Unmark as Migrated
+                    </button>
+                    <button
+                      className="btn secondary"
+                      onClick={handleArchiveSelectedSongs}
+                      disabled={selectedArchivableSongKeys.length === 0 || isMigratingSongs}
+                    >
+                      Archive selected
+                    </button>
+                    <button
+                      className="btn secondary"
+                      onClick={handleUnarchiveSelectedSongs}
+                      disabled={selectedUnarchivableSongKeys.length === 0 || isMigratingSongs}
+                    >
+                      Unarchive selected
                     </button>
                     <button
                       className="btn secondary"
@@ -1744,6 +2228,20 @@ export default function App() {
                 </button>
                 <button
                   className="btn secondary"
+                  onClick={handleArchiveSelectedSongs}
+                  disabled={selectedArchivableSongKeys.length === 0 || isMigratingSongs}
+                >
+                  Archive selected
+                </button>
+                <button
+                  className="btn secondary"
+                  onClick={handleUnarchiveSelectedSongs}
+                  disabled={selectedUnarchivableSongKeys.length === 0 || isMigratingSongs}
+                >
+                  Unarchive selected
+                </button>
+                <button
+                  className="btn secondary"
                   onClick={handleMarkSelectedDiffAsSolved}
                   disabled={!isDiffEnabled || selectedDiffSongKeys.length === 0 || isMigratingSongs}
                 >
@@ -1822,65 +2320,126 @@ export default function App() {
                 </div>
               ) : null}
 
-              <SongList
-                title="Songs in YouTube Playlist"
-                songs={targetSongs}
-                songDetails={youtubePlaylist?.songDetails ?? []}
-                selectable
-                selectedSongKeys={selectedYoutubeSongKeys}
-                onToggleSong={handleToggleYoutubeSong}
-                onToggleAll={handleToggleAllYoutubeSongs}
-                inlineAfterSongIndex={showInlineYoutubeActions ? firstSelectedYoutubeSongIndex : -1}
-                inlineAfterSongContent={
-                  showInlineYoutubeActions ? (
-                    <div className="batch-actions inline-batch-actions">
-                      <p className="muted">
-                        {selectedYoutubeSongKeys.length} selected | {targetSongs.length} total
-                      </p>
-                      <div className="batch-actions-row">
-                        {selectedYoutubeSongKeys.length === 1 ? (
-                          <>
-                            <label className="move-position-input">
-                              Move by
-                              <input
-                                type="number"
-                                min="1"
-                                step="1"
-                                value={youtubeMovePositionsInput}
-                                onChange={(event) => setYoutubeMovePositionsInput(event.target.value)}
-                                aria-label="Move selected song by number of positions"
-                              />
-                              <span>position(s)</span>
-                            </label>
-                            <button
-                              className="btn secondary"
-                              onClick={() => handleMoveSelectedYoutubeSong('up')}
-                              disabled={isMovingYoutubeSong || isDeletingYoutubeSongs}
-                            >
-                              {isMovingYoutubeSong ? 'Moving...' : 'Move Up'}
-                            </button>
-                            <button
-                              className="btn secondary"
-                              onClick={() => handleMoveSelectedYoutubeSong('down')}
-                              disabled={isMovingYoutubeSong || isDeletingYoutubeSongs}
-                            >
-                              {isMovingYoutubeSong ? 'Moving...' : 'Move Down'}
-                            </button>
-                          </>
-                        ) : null}
-                        <button
-                          className="btn danger"
-                          onClick={handleDeleteSelectedYoutubeSongs}
-                          disabled={selectedYoutubeSongKeys.length === 0 || isDeletingYoutubeSongs || isMovingYoutubeSong}
-                        >
-                          {isDeletingYoutubeSongs ? 'Deleting Songs...' : 'Delete Selected Songs'}
-                        </button>
+              {collapseMigratedSongs && youtubePlaylist ? (
+                <YouTubeAlignedList
+                  title="Songs in YouTube Playlist"
+                  rows={displayRows}
+                  selectable
+                  selectedSongKeys={selectedYoutubeSongKeys}
+                  onToggleSong={handleToggleYoutubeSong}
+                  onToggleAll={handleToggleAllYoutubeSongs}
+                  inlineAfterSongIndex={showInlineYoutubeActions ? firstSelectedYoutubeSongIndex : -1}
+                  inlineAfterSongContent={
+                    showInlineYoutubeActions ? (
+                      <div className="batch-actions inline-batch-actions">
+                        <p className="muted">
+                          {selectedYoutubeSongKeys.length} selected | {targetSongs.length} total
+                        </p>
+                        <div className="batch-actions-row">
+                          {selectedYoutubeSongKeys.length === 1 ? (
+                            <>
+                              <label className="move-position-input">
+                                Move by
+                                <input
+                                  type="number"
+                                  min="1"
+                                  step="1"
+                                  value={youtubeMovePositionsInput}
+                                  onChange={(event) => setYoutubeMovePositionsInput(event.target.value)}
+                                  aria-label="Move selected song by number of positions"
+                                />
+                                <span>position(s)</span>
+                              </label>
+                              <button
+                                className="btn secondary"
+                                onClick={() => handleMoveSelectedYoutubeSong('up')}
+                                disabled={isMovingYoutubeSong || isDeletingYoutubeSongs}
+                              >
+                                {isMovingYoutubeSong ? 'Moving...' : 'Move Up'}
+                              </button>
+                              <button
+                                className="btn secondary"
+                                onClick={() => handleMoveSelectedYoutubeSong('down')}
+                                disabled={isMovingYoutubeSong || isDeletingYoutubeSongs}
+                              >
+                                {isMovingYoutubeSong ? 'Moving...' : 'Move Down'}
+                              </button>
+                            </>
+                          ) : null}
+                          <button
+                            className="btn danger"
+                            onClick={handleDeleteSelectedYoutubeSongs}
+                            disabled={selectedYoutubeSongKeys.length === 0 || isDeletingYoutubeSongs || isMovingYoutubeSong}
+                          >
+                            {isDeletingYoutubeSongs ? 'Deleting Songs...' : 'Delete Selected Songs'}
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ) : null
-                }
-                emptyText={isLoadingPlaylists ? 'Loading songs...' : 'No songs yet. New playlists start empty.'}
-              />
+                    ) : null
+                  }
+                  emptyText={isLoadingPlaylists ? 'Loading songs...' : 'No songs yet. New playlists start empty.'}
+                />
+              ) : (
+                <SongList
+                  title="Songs in YouTube Playlist"
+                  songs={targetSongs}
+                  songDetails={youtubePlaylist?.songDetails ?? []}
+                  selectable
+                  selectedSongKeys={selectedYoutubeSongKeys}
+                  onToggleSong={handleToggleYoutubeSong}
+                  onToggleAll={handleToggleAllYoutubeSongs}
+                  inlineAfterSongIndex={showInlineYoutubeActions ? firstSelectedYoutubeSongIndex : -1}
+                  inlineAfterSongContent={
+                    showInlineYoutubeActions ? (
+                      <div className="batch-actions inline-batch-actions">
+                        <p className="muted">
+                          {selectedYoutubeSongKeys.length} selected | {targetSongs.length} total
+                        </p>
+                        <div className="batch-actions-row">
+                          {selectedYoutubeSongKeys.length === 1 ? (
+                            <>
+                              <label className="move-position-input">
+                                Move by
+                                <input
+                                  type="number"
+                                  min="1"
+                                  step="1"
+                                  value={youtubeMovePositionsInput}
+                                  onChange={(event) => setYoutubeMovePositionsInput(event.target.value)}
+                                  aria-label="Move selected song by number of positions"
+                                />
+                                <span>position(s)</span>
+                              </label>
+                              <button
+                                className="btn secondary"
+                                onClick={() => handleMoveSelectedYoutubeSong('up')}
+                                disabled={isMovingYoutubeSong || isDeletingYoutubeSongs}
+                              >
+                                {isMovingYoutubeSong ? 'Moving...' : 'Move Up'}
+                              </button>
+                              <button
+                                className="btn secondary"
+                                onClick={() => handleMoveSelectedYoutubeSong('down')}
+                                disabled={isMovingYoutubeSong || isDeletingYoutubeSongs}
+                              >
+                                {isMovingYoutubeSong ? 'Moving...' : 'Move Down'}
+                              </button>
+                            </>
+                          ) : null}
+                          <button
+                            className="btn danger"
+                            onClick={handleDeleteSelectedYoutubeSongs}
+                            disabled={selectedYoutubeSongKeys.length === 0 || isDeletingYoutubeSongs || isMovingYoutubeSong}
+                          >
+                            {isDeletingYoutubeSongs ? 'Deleting Songs...' : 'Delete Selected Songs'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null
+                  }
+                  emptyText={isLoadingPlaylists ? 'Loading songs...' : 'No songs yet. New playlists start empty.'}
+                />
+              )}
 
               <button
                 className="btn secondary playlist-refresh-btn"

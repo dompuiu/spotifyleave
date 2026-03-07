@@ -347,6 +347,105 @@ textarea {
   border-color: #bde4c7;
 }
 
+/* ---- Collapsed migrated run row (Spotify panel) ---- */
+.song-list li.song-collapsed-run {
+  background: #f0f4fb;
+  border-color: #c4cddf;
+  border-style: dashed;
+  padding: 6px 10px;
+}
+
+.collapsed-run-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #3f4a5f;
+  border-radius: 6px;
+}
+
+.collapsed-run-btn:hover {
+  color: #1a2540;
+}
+
+.collapsed-run-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapsed-run-chevron {
+  font-size: 0.7rem;
+  color: #7a8499;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.collapsed-run-btn[aria-expanded="true"] .collapsed-run-chevron {
+  transform: rotate(90deg);
+}
+
+/* ---- YouTube alignment row for a collapsed Spotify run ---- */
+.song-list li.yt-alignment-run {
+  background: #f0f4fb;
+  border-color: #c4cddf;
+  border-style: dashed;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+}
+
+.yt-alignment-label {
+  font-size: 0.88rem;
+  color: #7a8499;
+  font-style: italic;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- YouTube gap row (song missing at this position) ---- */
+.song-list li.yt-position-gap {
+  background: #faf9f6;
+  border-color: #ddd;
+  border-style: dashed;
+  opacity: 0.55;
+}
+
+.yt-gap-label {
+  color: #aaa;
+}
+
+/* ---- YouTube extra song (only in YT, beyond Spotify length) ---- */
+.song-list li.yt-extra-song {
+  background: #f4f6fa;
+  border-color: #d8deea;
+}
+
+.song-tag.yt-extra-tag {
+  border-color: #9ab4d4;
+  background: #daeaf7;
+  color: #1a3d5f;
+}
+
+/* ---- Spotify panel toggles (two checkboxes side by side) ---- */
+.spotify-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
 .song-list li {
   display: flex;
   gap: 8px;

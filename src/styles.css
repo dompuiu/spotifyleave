@@ -232,7 +232,7 @@ textarea {
 }
 
 .youtube-song-list-offset {
-  height: 52px;
+  height: 50px;
 }
 
 .youtube-floating-message {
@@ -454,6 +454,10 @@ textarea {
   max-width: 100%;
 }
 
+.song-list li[data-song-index] {
+  align-items: center;
+}
+
 .song-row-control {
   width: 18px;
   flex: 0 0 18px;
@@ -489,6 +493,7 @@ textarea {
 .song-tag-slot {
   min-width: 74px;
   display: inline-flex;
+  align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 6px;
@@ -496,12 +501,16 @@ textarea {
 
 .song-tag {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: fit-content;
   border-radius: 999px;
   border: 1px solid #9ec8a8;
   background: #d8f0de;
   color: #1b5e2f;
   font-size: 0.72rem;
+  line-height: 1;
+  white-space: nowrap;
   font-weight: 700;
   padding: 2px 8px;
 }
@@ -547,6 +556,20 @@ textarea {
   min-width: 1.8rem;
   font-weight: 700;
   color: #3f4a5f;
+}
+
+.song-duration {
+  flex: 0 0 3.25rem;
+  align-self: center;
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  text-align: right;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: #5f6775;
+  line-height: 1.35;
+  white-space: nowrap;
 }
 
 .muted {

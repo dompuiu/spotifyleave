@@ -97,10 +97,21 @@ def build_song_detail(track: dict[str, Any]) -> dict[str, str] | None:
     if not title:
         return None
 
+    duration = safe_str(track.get("duration"))
+    if not duration:
+        duration_seconds = safe_non_negative_int(track.get("duration_seconds"))
+        if duration_seconds is None:
+            duration_seconds = safe_non_negative_int(track.get("durationSeconds"))
+        if duration_seconds is not None:
+            minutes = duration_seconds // 60
+            seconds = duration_seconds % 60
+            duration = f"{minutes}:{seconds:02d}"
+
     return {
         "title": title,
         "artist": extract_artist_text(track),
         "album": extract_album_text(track),
+        "duration": duration,
         "videoId": safe_str(track.get("videoId")),
         "setVideoId": safe_str(track.get("setVideoId")),
     }

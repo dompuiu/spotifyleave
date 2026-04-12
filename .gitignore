@@ -3,6 +3,7 @@ dist
 
 # Runtime data and local auth tokens
 data/
+data
 .env
 
 # Python cache files

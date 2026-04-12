@@ -106,6 +106,7 @@ function normalizeSongDetails(value) {
         title,
         artist: typeof song.artist === 'string' ? song.artist.trim() : '',
         album: typeof song.album === 'string' ? song.album.trim() : '',
+        duration: typeof song.duration === 'string' ? song.duration.trim() : '',
         videoId: typeof song.videoId === 'string' ? song.videoId.trim() : '',
         setVideoId: typeof song.setVideoId === 'string' ? song.setVideoId.trim() : ''
       };
@@ -137,6 +138,11 @@ function parseSongString(song) {
   if (!title) return { title: text, artist: '', album: '' };
 
   return { title, artist, album: '' };
+}
+
+function getSongDuration(detail) {
+  const duration = typeof detail?.duration === 'string' ? detail.duration.trim() : '';
+  return duration || '--:--';
 }
 
 function normalizeSongKeyPart(value) {
@@ -583,6 +589,7 @@ function SongList({
               const isSelected = selectedSet.has(songKey);
               const shouldRenderInlineContent =
                 Boolean(inlineAfterSongContent) && sourceIndex === inlineAfterSongIndex;
+              const duration = getSongDuration(detail);
 
               return (
                 <li
@@ -605,16 +612,6 @@ function SongList({
                   <span className="song-text">
                     <span className="song-title-row">
                       <span>{detail?.title || song}</span>
-                      <span className="song-tag-slot">
-                        {isMigrated ? <span className="song-tag">Migrated</span> : null}
-                        {isArchived ? <span className="song-tag archived">Archived</span> : null}
-                        {diffStatus?.type === 'missing-at-position' ? (
-                          <span className="song-tag diff-gap">Gap at #{sourceIndex + 1}</span>
-                        ) : null}
-                        {diffStatus?.type === 'present-wrong-position' ? (
-                          <span className="song-tag diff-shifted">Found at #{diffStatus.actualIndex + 1}</span>
-                        ) : null}
-                      </span>
                     </span>
                     {detail?.artist || detail?.album ? (
                       <span className="song-meta">
@@ -622,6 +619,17 @@ function SongList({
                       </span>
                     ) : null}
                   </span>
+                  <span className="song-tag-slot">
+                    {isMigrated ? <span className="song-tag">Migrated</span> : null}
+                    {isArchived ? <span className="song-tag archived">Archived</span> : null}
+                    {diffStatus?.type === 'missing-at-position' ? (
+                      <span className="song-tag diff-gap">Gap at #{sourceIndex + 1}</span>
+                    ) : null}
+                    {diffStatus?.type === 'present-wrong-position' ? (
+                      <span className="song-tag diff-shifted">Found at #{diffStatus.actualIndex + 1}</span>
+                    ) : null}
+                  </span>
+                  <span className="song-duration">{duration}</span>
                   {shouldRenderInlineContent ? (
                     <span className="song-floating-actions">{inlineAfterSongContent}</span>
                   ) : null}
@@ -642,6 +650,7 @@ function SongList({
             const isArchived = archivedSet.has(songKey);
             const diffStatus = diffByIndex[index] || null;
             const shouldRenderInlineContent = Boolean(inlineAfterSongContent) && index === inlineAfterSongIndex;
+            const duration = getSongDuration(songDetails[index]);
 
             return (
                 <li
@@ -664,16 +673,6 @@ function SongList({
                   <span className="song-text">
                     <span className="song-title-row">
                       <span>{songDetails[index]?.title || song}</span>
-                      <span className="song-tag-slot">
-                        {isMigrated ? <span className="song-tag">Migrated</span> : null}
-                        {isArchived ? <span className="song-tag archived">Archived</span> : null}
-                        {diffStatus?.type === 'missing-at-position' ? (
-                          <span className="song-tag diff-gap">Gap at #{index + 1}</span>
-                        ) : null}
-                        {diffStatus?.type === 'present-wrong-position' ? (
-                          <span className="song-tag diff-shifted">Found at #{diffStatus.actualIndex + 1}</span>
-                        ) : null}
-                      </span>
                     </span>
                     {songDetails[index]?.artist || songDetails[index]?.album ? (
                       <span className="song-meta">
@@ -683,6 +682,17 @@ function SongList({
                       </span>
                     ) : null}
                   </span>
+                  <span className="song-tag-slot">
+                    {isMigrated ? <span className="song-tag">Migrated</span> : null}
+                    {isArchived ? <span className="song-tag archived">Archived</span> : null}
+                    {diffStatus?.type === 'missing-at-position' ? (
+                      <span className="song-tag diff-gap">Gap at #{index + 1}</span>
+                    ) : null}
+                    {diffStatus?.type === 'present-wrong-position' ? (
+                      <span className="song-tag diff-shifted">Found at #{diffStatus.actualIndex + 1}</span>
+                    ) : null}
+                  </span>
+                  <span className="song-duration">{duration}</span>
                   {shouldRenderInlineContent ? <span className="song-floating-actions">{inlineAfterSongContent}</span> : null}
                 </li>
             );
@@ -773,6 +783,7 @@ function YouTubeAlignedList({
               const isSelected = selectedSet.has(songKey);
               const shouldRenderInlineContent =
                 Boolean(inlineAfterSongContent) && sourceIndex === inlineAfterSongIndex;
+              const duration = getSongDuration(ytDetail);
 
               return (
                 <li
@@ -802,6 +813,7 @@ function YouTubeAlignedList({
                       </span>
                     ) : null}
                   </span>
+                  <span className="song-duration">{duration}</span>
                   {shouldRenderInlineContent ? (
                     <span className="song-floating-actions">{inlineAfterSongContent}</span>
                   ) : null}
@@ -815,6 +827,7 @@ function YouTubeAlignedList({
               const isSelected = selectedSet.has(songKey);
               const shouldRenderInlineContent =
                 Boolean(inlineAfterSongContent) && ytIndex === inlineAfterSongIndex;
+              const duration = getSongDuration(ytDetail);
 
               return (
                 <li
@@ -837,9 +850,6 @@ function YouTubeAlignedList({
                   <span className="song-text">
                     <span className="song-title-row">
                       <span>{ytDetail?.title || ytSong}</span>
-                      <span className="song-tag-slot">
-                        <span className="song-tag yt-extra-tag">YT only</span>
-                      </span>
                     </span>
                     {ytDetail?.artist || ytDetail?.album ? (
                       <span className="song-meta">
@@ -847,6 +857,10 @@ function YouTubeAlignedList({
                       </span>
                     ) : null}
                   </span>
+                  <span className="song-tag-slot">
+                    <span className="song-tag yt-extra-tag">YT only</span>
+                  </span>
+                  <span className="song-duration">{duration}</span>
                   {shouldRenderInlineContent ? (
                     <span className="song-floating-actions">{inlineAfterSongContent}</span>
                   ) : null}
@@ -1414,11 +1428,13 @@ export default function App() {
           ? track.artists.map((artist) => artist?.name).filter(Boolean)
           : [];
         const album = typeof track?.album?.name === 'string' ? track.album.name.trim() : '';
+        const duration = typeof track?.duration === 'string' ? track.duration.trim() : '';
 
         return {
           title,
           artist: artistNames.join(', '),
-          album
+          album,
+          duration
         };
       })
       .filter(Boolean);
